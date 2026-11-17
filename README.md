@@ -1,6 +1,18 @@
 # CodeForge
 
-A collaborative coding platform with accounts, project roles, Monaco, Yjs/Socket.IO collaboration, MongoDB persistence, Docker execution through BullMQ, Redis metadata caching, and a Gemini AI assistant. CI and production deployment configuration are prepared; hosted GitHub Actions and VPS deployment still require configuration and verification.
+A collaborative coding platform with accounts, project roles, Monaco, Yjs/Socket.IO collaboration, MongoDB persistence, Docker execution through BullMQ, Redis metadata caching, and a Gemini AI assistant.
+
+| Requirement | Implementation status |
+| --- | --- |
+| Authentication, sessions, project CRUD, membership, Owner/Editor/Viewer authorization | Implemented |
+| Monaco, explorer, file CRUD, folder creation/deletion, tabs, highlighting, autosave | Implemented; folder renaming from the original scope is absent, matching the later editor milestone's narrower scope |
+| Yjs collaboration, presence, remote cursors, chat, reconnects, MongoDB persistence | Implemented for one API instance |
+| JavaScript/Python/C++ Docker execution, BullMQ jobs, resource limits, results | Implemented for single-file programs with one worker |
+| Redis metadata caching with TTL and invalidation | Implemented; the project list itself is not cached |
+| Gemini review, debugging suggestions, test generation, explanation | Implemented; live responses require a valid server-side key and model access |
+| CI/CD | CI workflow implemented; hosted run unverified here. Deployment configuration prepared; VPS deployment deferred and unverified |
+
+Implementation status describes the code, not a fresh end-to-end test result. The latest review ran workspace typechecks/builds, shell syntax checks, workflow linting, and production Compose validation successfully. The existing Monaco bundle-size warning remains. Browser, Docker execution, and live Gemini scenarios were not rerun during this review; no automated test suite is committed.
 
 ## Local setup
 
@@ -25,6 +37,14 @@ In a separate terminal, start **exactly one worker**:
 npm run worker
 ```
 
+Alternatively, build the shared package once with `npm run build -w @codeforge/execution`, then start each process in its own terminal (do not also run `npm run dev`):
+
+```bash
+npm run dev -w apps/api     # API: http://127.0.0.1:3001
+npm run dev -w apps/web     # Frontend: http://localhost:5173
+npm run worker             # Exactly one worker
+```
+
 Open **http://localhost:5173**. Vite proxies `/api` and `/socket.io` to Express on port 3001. Use this exact origin. Compose starts MongoDB and Redis on loopback with persistent volumes; Redis uses AOF and `noeviction`. It is not a production deployment. For existing services, configure `MONGODB_URI` and `REDIS_URL` instead. The worker intentionally does not load `.env`: if changing `REDIS_URL` or `REDIS_PREFIX`, supply the same values in its process environment. Never forward API/session secrets to it.
 
 ```bash
@@ -35,7 +55,11 @@ docker compose -f compose.dev.yml stop
 
 After building, `npm run start -w apps/api` and `npm run start -w apps/worker` start the separate processes. The web build is in `apps/web/dist`. See deployment instructions below for production serving. Changing `PORT` also requires updating the Vite proxy target.
 
+After starting the API, use `curl --fail http://127.0.0.1:3001/api/health` for liveness and `curl --fail http://127.0.0.1:3001/api/ready` for MongoDB/Redis readiness. **Neither endpoint proves a worker is processing jobs or that Gemini works.** Run an actual execution and AI request separately.
+
 ## Structure
+
+The browser sends ordinary operations to Express over REST and live document/chat messages over Socket.IO. Yjs merges edits; MongoDB stores document state, users, sessions, projects, and chat. Express also caches project-member metadata and enqueues executions in Redis. The separate BullMQ worker runs temporary Docker containers and stores results in Redis; the browser polls authorized REST status. AI requests go from Express to Gemini, keeping the key off the browser. Production Caddy would serve the frontend and proxy both REST and WebSockets to the same API.
 
 - `apps/web/src`: React screens; `CodeWorkspace.tsx`, `FileExplorer.tsx`, `useFileTabs.ts`, `monaco.ts`, `CollaborativeEditor.tsx`, and `ProjectChat.tsx` implement the editor and live project UI.
 - `apps/api/src`: Express routes, MongoDB models, sessions, validation, and permissions; `files.ts` handles file operations, `realtime.ts` handles sockets, and `documents.ts` merges/persists Yjs state.
@@ -118,6 +142,8 @@ Project-member metadata is cached for 30 seconds after a live MongoDB authorizat
 
 **This is not a hardened multi-tenant sandbox.** Containers share the host kernel; Docker daemon access is host-root-equivalent authority. Production Compose gives only the trusted worker the Docker socket. API/web and submitted programs receive no socket or host credentials. Development commands run under your current account and do not provide that separation. Use this setup for trusted portfolio demonstrations, not a public hostile-code service.
 
+Per-job limits do not impose a total host budget for accounts, projects, or socket connections. API rate counters are in memory and reset on restart; queue admission checks are not an atomic global quota. There is no automated backup/restore process. These are operational limitations, and the source review is not a penetration test.
+
 ## AI developer assistant
 
 Set `GEMINI_API_KEY` privately in the root `.env` and restart the API. `GEMINI_MODEL` defaults to `gemini-3.5-flash-lite`; use a Gemini text model available to your account that supports `generateContent`. Supply the model ID without a `models/` prefix. Keep both settings server-side, never in `VITE_*` variables. Without a key, requests show a configuration message; there are no placeholder answers. The implementation uses Node's built-in `fetch` with the [Gemini generateContent API](https://aistudio.google.com/api-reference/generate-content/generate-content), without an AI framework. The private `.env` is preserved; add the new Gemini settings there rather than copying over existing configuration.
@@ -130,11 +156,7 @@ To verify with a valid key, open a small function with a known bug (for example,
 
 ## Manual verification
 
-The collaboration milestone passed 45 checks against real MongoDB, Socket.IO clients, and two isolated Chromium sessions. These covered concurrent edits, remote cursors, chat, unauthorized access, disconnect/reconnect merging, an actual API restart, browser refresh, role changes, logout, and existing file/tab operations. TypeScript checks and production builds pass; the dependency audit reports no vulnerabilities. Desktop/mobile screenshots were reviewed. Verification uses a disposable database; no demo accounts are seeded.
-
-Execution verification passed 51 checks using real runner images, BullMQ/Redis, MongoDB, and Owner/Viewer Chromium sessions. It covered all three languages, compile/runtime errors, deadlines, output/memory limits, live container restrictions, cleanup, worker/API restart, permissions, cache hits/TTL/invalidation, and browser save/run/results. Failure checks covered Redis unavailability, status retry without duplicate submission, expired results, and rate limits. Temporary verification accounts, databases, and queue data were removed.
-
-Gemini verification passed 48 API/browser checks and five additional response-parser checks using controlled provider responses injected only into temporary verification processes. These covered all four actions, selection/file context, permissions, loading, configuration/provider errors, blocked and incomplete responses, reasoning-part filtering, deadlines, inert text rendering, and unchanged files. No fixture responses or test transport are included in the application. Live Chromium verification then exercised all four actions with a synthetic function: review/debug identified its deliberate arithmetic bug, explanation described the actual behavior, and test generation produced normal/edge cases and a regression test. File content and revision stayed unchanged. Generated tests were reviewed as text, not executed; temporary verification projects and accounts were removed.
+Earlier milestone verification exercised collaboration in two browser sessions, Docker execution/limits, role enforcement, caching, and all four live Gemini actions. Those runs used disposable data and temporary verification scripts, not a committed regression suite. Repeat the following checks on your machine; they are instructions, not a claim that this review reran them. Use disposable projects/accounts and never expose session cookies or API keys.
 
 1. Register an owner; create a project, reload the page, and confirm it persists. Rename it and confirm the updated name.
 2. Sign out and sign back in. Check that a wrong password fails and an existing email cannot register again (including with different casing).
@@ -159,13 +181,19 @@ Gemini verification passed 48 API/browser checks and five additional response-pa
 
 Open tabs/view positions are not restored after refresh. Folders cannot be renamed or moved. Unsaved updates are held only in browser memory, so closing/reloading despite the warning can lose them. Monaco's lazy editor bundle produces a size warning during builds. There is no distributed socket scaling. Do not expose the development services publicly.
 
-## CI and production deployment
+## GitHub Actions CI
 
 `.github/workflows/ci.yml` runs on pushes and pull requests using Node 24: `npm ci`, `npm run typecheck`, `npm run build`, Compose validation, and shell syntax checks. Make **TypeScript and production builds** a required branch check. CI needs no application secrets. To reproduce locally, run those three npm commands and `bash -n deploy/deploy.sh deploy/ssh-deploy.sh`.
 
+To verify hosted CI, open the repository's **Actions → CI**, select the run for the latest pushed commit, and confirm its SHA and all check steps are green. A local commit or a local build does not prove Actions passed. If no run exists, check that the workflow was pushed and Actions is enabled; CI also supports manual **Run workflow**. Inspect a pull-request run to verify that trigger as well. Do not run **Deploy** to test CI. Record the successful run URL for your demonstration.
+
+## Optional future VPS deployment
+
+Skip this section for the current local portfolio setup. No VPS, domain, GHCR login, SSH credentials, or production environment file is needed to run the application locally or verify CI. The following configuration is prepared for a later, explicitly approved deployment; no production server is claimed to be running.
+
 The three `apps/*/Dockerfile` files build production images. `compose.prod.yml` runs one API, one worker, MongoDB, Redis, and Caddy serving the frontend. Caddy handles HTTPS and WebSockets; only ports 80/443 are published. MongoDB/Redis use authentication and persistent volumes on an internal network. `/api/ready` checks MongoDB and Redis; Compose also checks worker/Docker health. Restart policies recover stopped processes, but Docker does not automatically restart a process solely because it becomes unhealthy.
 
-Local verification passed dependency installation, workspace typechecks/builds, workflow linting, and all three application image builds. An isolated production stack passed 29 checks covering verified local HTTPS, secure cookies, WebSockets, all three runner languages, cleanup, and session/file persistence after container recreation. Deployment scripts passed 15 checks with mocked transports, including failed health checks, rollback, pinned SSH host verification, and preserved environment files/volumes. These do not constitute a hosted Actions run or VPS deployment.
+Earlier deployment-milestone verification built all three application images, passed 29 checks against an isolated local production stack, and passed 15 deployment-script checks using mocked transports. These covered HTTPS, sessions, WebSockets, runners, persistence, and failure/rollback behavior. They do not constitute a hosted Actions run, a public certificate check, or a VPS deployment; they were not rerun in the final review.
 
 Deployment is **manual and disabled by default**. `.github/workflows/deploy.yml` requires `main`, repository variable `DEPLOYMENT_ENABLED=true`, and the approval checkbox. It reruns CI, builds six images (three services and three runners), pushes commit-SHA tags to GHCR, then waits for the `production` environment gate before SSH. Failed CI blocks publishing/deployment. Keep deployment disabled until the VPS is configured and its owner explicitly approves deployment.
 
@@ -211,4 +239,6 @@ bash /opt/codeforge/releases/FULL_PREVIOUS_SHA/deploy/deploy.sh /opt/codeforge F
 
 Retain release images and back up MongoDB/Redis volumes before upgrades. Rollback changes application images, not database contents. Never use `down --volumes` or volume pruning on this deployment. MongoDB passwords initialize only on an empty volume: changing the environment file does not rotate existing database users; rotate credentials in MongoDB as well. Preserve Caddy volumes for certificates.
 
-After an approved deployment, check the Actions result, Compose health, and `https://YOUR_DOMAIN/api/ready`. In two browser profiles verify registration/login, a saved file after refresh, live edits/chat, and execution in each language. Restart/recreate services without removing volumes and confirm sessions, files, and jobs persist. Hosted Actions and VPS verification remain pending until publication, credentials, and explicit deployment approval are provided.
+After an approved deployment, check the Actions result, Compose health, and `curl --fail https://YOUR_DOMAIN/api/ready`. In two browser profiles verify registration/login, a saved file after refresh, live edits/chat, and execution in each language. Restart/recreate services without removing volumes and confirm sessions, files, and retained jobs persist. Hosted Actions has not been verified in this review; VPS verification is deferred until configuration and explicit approval.
+
+Production Compose checks worker Redis connectivity and Docker access, but a successful sample job is still needed to verify runner-image availability.
