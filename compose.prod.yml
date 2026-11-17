@@ -1,0 +1,146 @@
+x-defaults: &defaults
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: '3'
+
+services:
+  web:
+    <<: *defaults
+    image: ${IMAGE_REPOSITORY:?Set IMAGE_REPOSITORY}/web:${IMAGE_TAG:?Set IMAGE_TAG}
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?Set APP_DOMAIN}
+    ports:
+      - '80:80'
+      - '443:443'
+    networks: [frontend]
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: '0'
+    depends_on:
+      api: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, 'http://127.0.0.1:8080/healthz']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  api:
+    <<: *defaults
+    image: ${IMAGE_REPOSITORY:?Set IMAGE_REPOSITORY}/api:${IMAGE_TAG:?Set IMAGE_TAG}
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: '3001'
+      TRUST_PROXY: '1'
+      APP_ORIGIN: https://${APP_DOMAIN:?Set APP_DOMAIN}
+      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET}
+      MONGODB_URI: mongodb://codeforge:${MONGO_APP_PASSWORD:?Set MONGO_APP_PASSWORD}@mongo:27017/codeforge?authSource=codeforge
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379
+      REDIS_PREFIX: ${REDIS_PREFIX:-codeforge_prod}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash-lite}
+    networks: [frontend, backend]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    init: true
+    stop_grace_period: 20s
+    depends_on:
+      mongo: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3001/api/ready',{signal:AbortSignal.timeout(4000)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  worker:
+    <<: *defaults
+    image: ${IMAGE_REPOSITORY:?Set IMAGE_REPOSITORY}/worker:${IMAGE_TAG:?Set IMAGE_TAG}
+    environment:
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379
+      REDIS_PREFIX: ${REDIS_PREFIX:-codeforge_prod}
+      RUNNER_IMAGE_PREFIX: ${IMAGE_REPOSITORY:?Set IMAGE_REPOSITORY}/runner
+      RUNNER_IMAGE_TAG: ${IMAGE_TAG:?Set IMAGE_TAG}
+      WORKER_HEALTH_FILE: /tmp/codeforge-worker-ready
+    networks: [backend]
+    # Only this trusted service receives Docker access. It is host-root-equivalent authority.
+    group_add: ['${DOCKER_GID:?Set the host Docker socket group ID}']
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    init: true
+    stop_grace_period: 90s
+    depends_on:
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: [CMD-SHELL, "docker --config /nonexistent-codeforge-config --host unix:///var/run/docker.sock info >/dev/null 2>&1 && node -e 'process.exit(Date.now()-require(\"fs\").statSync(\"/tmp/codeforge-worker-ready\").mtimeMs<30000?0:1)'"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  mongo:
+    <<: *defaults
+    image: mongo:8.0
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?Set MONGO_ROOT_PASSWORD}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:?Set MONGO_APP_PASSWORD}
+    networks: [backend]
+    volumes:
+      - mongo_data:/data/db
+      - mongo_config:/data/configdb
+      - ./deploy/mongo-init.js:/docker-entrypoint-initdb.d/01-codeforge.js:ro
+    healthcheck:
+      test: [CMD, mongosh, --quiet, --eval, "try { const app = db.getSiblingDB('codeforge'); app.auth('codeforge', process.env.MONGO_APP_PASSWORD); quit(app.runCommand({ping:1}).ok === 1 ? 0 : 1); } catch { quit(1); }"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 30s
+
+  redis:
+    <<: *defaults
+    image: redis:7.4-alpine
+    user: redis
+    command: [sh, -c, 'exec redis-server --appendonly yes --maxmemory-policy noeviction --requirepass "$$REDIS_PASSWORD"']
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
+    networks: [backend]
+    volumes:
+      - redis_data:/data
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep -q PONG']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+networks:
+  frontend:
+  backend:
+    internal: true
+
+volumes:
+  mongo_data:
+  mongo_config:
+  redis_data:
+  caddy_data:
+  caddy_config:

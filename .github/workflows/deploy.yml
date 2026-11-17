@@ -1,0 +1,107 @@
+name: Deploy
+
+# No push trigger: deployment always requires a deliberate manual request.
+on:
+  workflow_dispatch:
+    inputs:
+      approve_deployment:
+        description: 'I have configured the VPS and approve this production deployment'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeforge-production
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require main branch, enabled deployment, and explicit approval
+        env:
+          DEPLOYMENT_ENABLED: ${{ vars.DEPLOYMENT_ENABLED }}
+          APPROVED: ${{ inputs.approve_deployment }}
+        run: |
+          if [[ "$GITHUB_REF" != refs/heads/main || "$DEPLOYMENT_ENABLED" != true || "$APPROVED" != true ]]; then
+            echo '::error::Deployment requires main, DEPLOYMENT_ENABLED=true, and the explicit approval checkbox.'
+            exit 1
+          fi
+  verify:
+    needs: authorize
+    uses: ./.github/workflows/ci.yml
+
+  images:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: api, context: '.', file: apps/api/Dockerfile}
+          - {name: web, context: '.', file: apps/web/Dockerfile}
+          - {name: worker, context: '.', file: apps/worker/Dockerfile}
+          - {name: runner-javascript, context: runners/javascript, file: runners/javascript/Dockerfile}
+          - {name: runner-python, context: runners/python, file: runners/python/Dockerfile}
+          - {name: runner-cpp, context: runners/cpp, file: runners/cpp/Dockerfile}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Set image repository
+        run: echo "IMAGE_REPOSITORY=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish this commit's image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE_REPOSITORY }}/${{ matrix.name }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+  deploy:
+    needs: [verify, images]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Check main still matches the verified commit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node --input-type=module <<'JS'
+          const response = await fetch(`${process.env.GITHUB_API_URL}/repos/${process.env.GITHUB_REPOSITORY}/git/ref/heads/main`, {
+            headers: { Authorization: `Bearer ${process.env.GITHUB_TOKEN}`, Accept: 'application/vnd.github+json' },
+          });
+          if (!response.ok || (await response.json()).object.sha !== process.env.GITHUB_SHA) {
+            throw new Error('main changed or could not be verified. Run deployment again for the current main commit.');
+          }
+          JS
+      - name: Deploy over verified SSH and check HTTPS health
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_APP_URL: ${{ secrets.DEPLOY_APP_URL }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: bash deploy/ssh-deploy.sh

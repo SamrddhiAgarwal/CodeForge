@@ -1,0 +1,18 @@
+{
+  "name": "codeforge",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": ["packages/*", "apps/*"],
+  "engines": { "node": ">=22.12.0" },
+  "scripts": {
+    "predev": "npm run build -w @codeforge/execution",
+    "dev": "concurrently -k -n api,web \"npm run dev -w apps/api\" \"npm run dev -w apps/web\"",
+    "worker": "npm run build -w @codeforge/execution && npm run dev -w apps/worker",
+    "runners:build": "docker build -t codeforge-runner-javascript:1 runners/javascript && docker build -t codeforge-runner-python:1 runners/python && docker build -t codeforge-runner-cpp:1 runners/cpp",
+    "pretypecheck": "npm run build -w @codeforge/execution",
+    "typecheck": "npm run typecheck --workspaces",
+    "build": "npm run build --workspaces"
+  },
+  "devDependencies": { "concurrently": "^9.2.1", "typescript": "^5.9.3" },
+  "overrides": { "monaco-editor": { "dompurify": "^3.4.17" } }
+}

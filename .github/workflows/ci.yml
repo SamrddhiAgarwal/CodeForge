@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: TypeScript and production builds
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Check all workspaces
+        run: npm run typecheck
+      - name: Build all workspaces
+        run: npm run build
+      - name: Validate production configuration
+        env:
+          IMAGE_REPOSITORY: ghcr.io/example/codeforge
+          IMAGE_TAG: ci
+          APP_DOMAIN: example.invalid
+          SESSION_SECRET: ci-only-placeholder-not-a-production-secret
+          MONGO_ROOT_PASSWORD: ci-placeholder
+          MONGO_APP_PASSWORD: ci-placeholder
+          REDIS_PASSWORD: ci-placeholder
+          DOCKER_GID: '0'
+        run: |
+          docker compose --env-file /dev/null -f compose.prod.yml config --quiet
+          bash -n deploy/deploy.sh deploy/ssh-deploy.sh
+      - name: Report failure
+        if: failure()
+        run: echo '::error::CI failed. Review the failing install, typecheck, build, or configuration step. Deployment is blocked.'

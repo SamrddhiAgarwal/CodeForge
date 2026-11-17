@@ -1,0 +1,33 @@
+{
+  "name": "@codeforge/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@codeforge/execution": "0.1.0",
+    "bullmq": "^5.0.0",
+    "ioredis": "^5.0.0",
+    "connect-mongo": "^5.1.0",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.2.1",
+    "express-session": "^1.18.2",
+    "helmet": "^8.1.0",
+    "mongoose": "^8.19.4",
+    "socket.io": "^4.8.4",
+    "yjs": "^13.6.33",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.5",
+    "@types/express-session": "^1.18.2",
+    "@types/node": "^24.10.0",
+    "tsx": "^4.20.6"
+  }
+}

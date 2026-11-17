@@ -1,0 +1,9 @@
+{
+  "name": "@codeforge/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "dev": "tsx src/worker.ts", "build": "tsc", "typecheck": "tsc --noEmit", "start": "node dist/worker.js" },
+  "dependencies": { "@codeforge/execution": "0.1.0", "bullmq": "^5.0.0" },
+  "devDependencies": { "@types/node": "^24.10.0", "tsx": "^4.20.6" }
+}
